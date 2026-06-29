@@ -4,13 +4,17 @@
 #include <format>
 #include <string>
 #endif
-#include "memory.hpp"
+#include <type_traits>
 #include "types.hpp"
+
+class scheduler;
+class mmu;
+class interrupts;
 
 class cpu {
 public:
-    explicit cpu(memory& mem)
-        : m_memory {mem}
+    cpu(scheduler& s, mmu& m, interrupts& i)
+        : scheduler{s}, mmu{m}, interrupts{i}
     {}
 
     void tick();
@@ -19,104 +23,148 @@ public:
     std::string to_string();
 #endif
 
-    bool low_power_mode {false};
 private:
     // Constants
 
-    static constexpr u8 b {0}, c {1};
-    static constexpr u8 d {2}, e {3};
-    static constexpr u8 h {4}, l {5};
-    static constexpr u8 a {7}, f {6};
-
-    static constexpr u8 zbit {7};
-    static constexpr u8 nbit {6};
-    static constexpr u8 hbit {5};
-    static constexpr u8 cbit {4};
-
-    // Registers/Flags
-
-    memory& m_memory;
-    u8 m_reg[8] {0x00, 0x13, 0x00, 0xD8, 0x01, 0x4D, 0, 0x01};
-    u16 m_sp {0xFFFE}, m_pc {0x100};
-    bool zf {true}, nf {false}, hf {true}, cf {true};
-
-    // Getters/Setters
-
-    template <u8 hi, u8 lo>
-    [[nodiscard]] u16 get_pair() const;
-
-    template <u8 hi, u8 lo>
-    void set_pair(u16 val);
-
-    [[nodiscard]] static u8 get_bit_mask(u8 val);
-    [[nodiscard]] u8 get_imm8();
-    [[nodiscard]] u16 get_imm16();
-
-    template <u8 r8>
-    [[nodiscard]] u8 get_r8();
-
-    template <u8 r8>
-    void set_r8(u8 data);
-
-    enum class r16_group {
-        base, // bc, de,  hl,  sp
-        stk,  // bc, de,  hl,  af
-        mem   // bc, de, hl+, hl-
+    enum class address_mode {
+        b, c,
+        d, e,
+        h, l,
+        a,
+        bc,
+        de,
+        hl,
+        sp,
+        af,
+        bc_indirect,
+        de_indirect,
+        hl_indirect,
+        hl_inc,
+        hl_dec,
+        imm_8,
+        imm_16,
+        imm_16_indirect
     };
 
-    template <u8 r16, r16_group group = r16_group::base>
-    [[nodiscard]] u16 get_r16();
+    enum class condition {
+        none,
+        nz, z,
+        nc, c
+    };
 
-    template <u8 r16, r16_group group = r16_group::base>
-    void set_r16(u16 data);
+    enum r {
+        b = 0, c = 1,
+        d = 2, e = 3,
+        h = 4, l = 5,
+        a = 7, f = 6
+    };
 
-    // Instructions
-    // ------------
+    static constexpr u8 zbit{7};
+    static constexpr u8 nbit{6};
+    static constexpr u8 hbit{5};
+    static constexpr u8 cbit{4};
+
+    // CPU Internals
+
+    scheduler& scheduler;
+    mmu& mmu;
+    interrupts& interrupts;
+    u8 reg[8]{0x00, 0x13, 0x00, 0xD8, 0x01, 0x4D, 0, 0x01};
+    u16 sp{0xFFFE}, pc{0x100};
+    bool zf{true}, nf{false}, hf{true}, cf{true};
+    u8 ime{0};
+    bool halted{false}, halt_bugged{false};
+
+    template<address_mode M>
+    static consteval bool is_8_bit();
+
+    template<address_mode M>
+    using operand_t = std::conditional_t<is_8_bit<M>(), u8, u16>;
+
+    template<condition cc = condition::none>
+    [[nodiscard]] bool evaluate_condition() const;
+
+    template<r hi, r lo>
+    [[nodiscard]] u16 get_pair() const;
+
+    template<r hi, r lo>
+    void set_pair(u16 val);
+
+    template<address_mode M>
+    [[nodiscard]] operand_t<M> get_operand();
+
+    template<address_mode M>
+    void set_operand(operand_t<M> data);
+
+    void service_interrupt();
+
+    [[nodiscard]] u8 fetch();
+
+#pragma region Instructions // (https://rgbds.gbdev.io/docs/v0.9.3/gbz80.7)
     // Misc
 
-    static void nop() {}
-    void stop() {}
-    void halt() {}
-    void di() {}
-    void ei() {}
+    void stop() const;
 
-    // Load/Store
+    void halt();
 
-    template<u8 op>
-    [[nodiscard]] u16 get_ff00();
+    void di();
 
-    template<u8 op, u8 bit = 8>
-    void ld_r_imm();
+    void ei();
 
-    template<u8 op>
-    void ld_r_r();
+    // Load
 
-    template<u8 op>
-    void ld_a();
+    template<address_mode dst, address_mode src>
+    void ld();
 
-    template<u8 op>
+    template<address_mode dst, address_mode src>
     void ldh();
 
-    void ld_hl_sp();
+    template<address_mode M>
+    void ld_sp_e();
+
     void ld_sp_hl();
 
-    template<u8 op>
-    void st_a();
+    void ld_nn_sp();
 
-    void st_sp();
-
-    template<u8 op>
-    void sth();
-
-    template<u8 op>
+    template<address_mode M>
     void pop();
 
-    void push(u16 data);
+    template<address_mode M>
+    void push();
 
-    // Arithmetic Logic Unit
+    // ALU
 
-    template<u8 op>
-    [[nodiscard]] u8 get_alu_operand();
+    template<address_mode M>
+    void add();
+
+    template<address_mode M>
+    void adc();
+
+    template<address_mode M>
+    void sub();
+
+    template<address_mode M>
+    void sbc();
+
+    template<address_mode M>
+    void land();
+
+    template<address_mode M>
+    void lxor();
+
+    template<address_mode M>
+    void lor();
+
+    template<address_mode M>
+    void cp();
+
+    template<address_mode M>
+    void inc();
+
+    template<address_mode M>
+    void dec();
+
+    // ALU helpers
 
     template<bool was_and>
     void set_logic_flags();
@@ -124,101 +172,87 @@ private:
     template<bool addition>
     void do_arithmetic(u8 operand, bool cy = false);
 
-    template<u8 op, u8 bit, int sign>
+    template<address_mode M, int sign>
     void do_increment();
 
-    template<u8 op, u8 bit = 8>
-    void add();
+    // Rotate/Shift, Bit
 
-    template<u8 op>
-    void adc();
+    template<address_mode M>
+    void rlc();
 
-    template<u8 op>
-    void sub();
+    template<address_mode M>
+    void rrc();
 
-    template<u8 op>
-    void sbc();
+    template<address_mode M>
+    void rl();
 
-    template<u8 op>
-    void land();
+    template<address_mode M>
+    void rr();
 
-    template<u8 op>
-    void lxor();
+    template<address_mode M>
+    void sla();
 
-    template<u8 op>
-    void lor();
+    template<address_mode M>
+    void sra();
 
-    template<u8 op>
-    void cp();
+    template<address_mode M>
+    void swap();
 
-    template<u8 op, u8 bit = 8>
-    void inc();
+    template<address_mode M>
+    void srl();
 
-    template<u8 op, u8 bit = 8>
-    void dec();
-
-    // Rotate/Shift Bit
-
-    enum class shift_op {
-        rlc  = 0b000,
-        rrc  = 0b001,
-        rl   = 0b010,
-        rr   = 0b011,
-        sla  = 0b100,
-        sra  = 0b101,
-        swap = 0b110,
-        srl  = 0b111,
-    };
-
-    template<u8 op>
-    void shift();
-
-    template<u8 op>
+    template<address_mode M, u8 b3>
     void bit();
 
-    template<u8 op>
+    template<address_mode M, u8 b3>
     void res();
 
-    template<u8 op>
+    template<address_mode M, u8 b3>
     void set();
 
-    // Accumulator/Flag operations
+    // Rotate/Shift, Bit helpers
+
+    void set_shift_flags(u8 val);
+
+    // Accumulator/Flag
 
     void daa();
+
     void cpl();
+
     void scf();
+
     void ccf();
+
     void rlca();
+
     void rla();
+
     void rrca();
+
     void rra();
 
     // Branch
 
-    enum class cond {
-        none,
-        nz,
-        z,
-        nc,
-        c
-    };
-
-    template<cond cc>
-    [[nodiscard]] bool evaluate_cond() const;
-
-    template<cond cc = cond::none>
+    template<condition cc = condition::none>
     void ret();
+
     void reti();
 
-    template<u8 op, cond cc = cond::none>
+    template<condition cc = condition::none>
     void jp();
 
-    template<cond cc = cond::none>
+    template<condition cc = condition::none>
     void jr();
 
-    template<cond cc = cond::none>
+    template<condition cc = condition::none>
     void call();
 
-    template<u8 op>
+    template<u8 tgt3>
     void rst();
+
+    // Branch helpers
+
+    void push_pc();
+#pragma endregion
 };

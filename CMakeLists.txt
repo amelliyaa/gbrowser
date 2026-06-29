@@ -4,8 +4,25 @@ project(gbrowser)
 set(CMAKE_CXX_STANDARD 20)
 
 add_executable(gbrowser main.cpp
+        src/types.hpp
+        src/gb.cpp
+        src/gb.hpp
+        src/scheduler.cpp
+        src/scheduler.hpp
         src/cpu.cpp
         src/cpu.hpp
-        src/types.hpp
-        src/memory.cpp
-        src/memory.hpp)
+        src/mmu.cpp
+        src/mmu.hpp
+        src/timer.cpp
+        src/timer.hpp
+        src/interrupts.cpp
+        src/interrupts.hpp
+)
+
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+if (ipo_supported)
+    set_property(TARGET gbrowser PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+else ()
+    message(WARNING "IPO is not supported: ${output}")
+endif ()
